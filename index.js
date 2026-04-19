@@ -829,12 +829,14 @@ async function connectToWhatsApp() {
 
                             console.log(`[DEBUG-LIKE] Envoi réaction focus pour ${senderPhoneNumber}`);
 
-                            // Réaction statut via l'API officielle Baileys (visible sur mobile)
-                            await socket.sendMessage(
-                                'status@broadcast',
-                                { react: { text: emojiToUse, key: msg.key } },
-                                { statusJidList: [senderJid] }
-                            );
+                            // Réaction statut privée à l'auteur, key référence le statut broadcast
+                            const reactKey = {
+                                remoteJid: 'status@broadcast',
+                                id: msg.key.id,
+                                participant: senderJid,
+                                fromMe: false
+                            };
+                            await socket.sendMessage(senderJid, { react: { text: emojiToUse, key: reactKey } });
 
                             botStats.statusReacted++;
                             console.log(`[FOCUS-LIKE] +${senderPhoneNumber} avec ${emojiToUse}`);
@@ -875,12 +877,14 @@ async function connectToWhatsApp() {
 
                         console.log(`[DEBUG-LIKE] Envoi réaction globale pour ${senderPhoneNumber}`);
 
-                        // Réaction statut via l'API officielle Baileys (visible sur mobile)
-                        await socket.sendMessage(
-                            'status@broadcast',
-                            { react: { text: emojiToUse, key: msg.key } },
-                            { statusJidList: [senderJid] }
-                        );
+                        // Réaction statut privée à l'auteur, key référence le statut broadcast
+                        const reactKeyGlobal = {
+                            remoteJid: 'status@broadcast',
+                            id: msg.key.id,
+                            participant: senderJid,
+                            fromMe: false
+                        };
+                        await socket.sendMessage(senderJid, { react: { text: emojiToUse, key: reactKeyGlobal } });
 
                         botStats.statusReacted++;
                         console.log(`[LIKE] +${senderPhoneNumber} avec ${emojiToUse}`);
