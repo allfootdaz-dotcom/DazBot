@@ -30,9 +30,9 @@ const botStartTime = Math.floor(Date.now() / 1000);
 
 let isActivelyLiking = true;
 let fixedEmoji = null;
-let focusTargets = new Map(); // Store JID -> { emoji: string }
-let discreteTargets = new Set(); // Store JIDs for view-only
-let focusViewOnly = false; // Legacy, will be removed or repurposed
+let focusTargets = new Map(); // numero -> { emoji: string|null }
+let discreteTargets = new Set(); // numeros vus sans like
+let focusViewJids = new Set(); // numeros vus uniquement (Focus Vision)
 let focusVVJids = new Set();
 let reactionSticker = null;
 let isViewOnly = false;
@@ -369,10 +369,10 @@ async function connectToWhatsApp() {
                 } else if (cmd === 'dazreset') {
                     focusTargets.clear();
                     discreteTargets.clear();
+                    focusViewJids.clear();
                     isActivelyLiking = true;
                     isViewOnly = false;
                     fixedEmoji = null;
-                    focusViewOnly = false;
                     focusVVJids.clear();
                     antiDelete.clearFocus();
                     await socket.sendMessage(targetChat, { text: `🧹 *RÉINITIALISATION COMPLÈTE*\n\n- Focus Status : Vidé\n- Liste Discrète : Vidée\n- Auto-Like : ON ✅\n- Vision Seule : OFF ❌\n- Anti-Delete : Reset\n\nLe bot est revenu à sa configuration d'origine.` }, { quoted: msg });
@@ -454,22 +454,34 @@ async function connectToWhatsApp() {
                         }
                     }
                 } else if (cmd === 'dazonlyview') {
-                    const arg = textLower.split(/\s+/)[1];
-                    if (!arg) {
-                        await socket.sendMessage(targetChat, { text: `❌ Spécifiez un numéro ou 'off'.\nExemple: ${currentPrefix}dazonlyview 2250102030405` }, { quoted: msg });
-                    } else if (arg === 'off') {
-                        focusJid = null;
-                        focusViewOnly = false;
-                        await socket.sendMessage(targetChat, { text: `✅ Mode focus vision seule désactivé.` }, { quoted: msg });
-                    } else {
-                        const cleanNumber = arg.replace(/\D/g, '');
+                    const action = textLower.split(/\s+/)[1];
+                    const target = textLower.split(/\s+/)[2];
+
+                    if (!action || action === 'list') {
+                        const list = Array.from(focusViewJids).map(j => `• +${j}`).join('\n') || "Aucun";
+                        return await socket.sendMessage(targetChat, { text: `👁️ *FOCUS VISION SEULE*\n\nUsage:\n- ${currentPrefix}dazonlyview add [num]\n- ${currentPrefix}dazonlyview remove [num]\n- ${currentPrefix}dazonlyview off\n\nCibles actuelles:\n${list}` }, { quoted: msg });
+                    }
+
+                    if (action === 'off') {
+                        focusViewJids.clear();
+                        await socket.sendMessage(targetChat, { text: `✅ Focus Vision Seule désactivé.` }, { quoted: msg });
+                    } else if (action === 'add') {
+                        if (!target) return await socket.sendMessage(targetChat, { text: `❌ Spécifiez un numéro.` }, { quoted: msg });
+                        const cleanNumber = target.replace(/\D/g, '');
                         if (cleanNumber.length >= 8) {
-                            focusJid = cleanNumber;
-                            focusViewOnly = true;
-                            isActivelyLiking = false;
-                            await socket.sendMessage(targetChat, { text: `👁️ Mode Focus Vision Seule activé !\nLe bot ne regardera désormais QUE les statuts de : +${cleanNumber}` }, { quoted: msg });
+                            focusViewJids.add(cleanNumber);
+                            await socket.sendMessage(targetChat, { text: `✅ +${cleanNumber} ajouté au Focus Vision Seule (vu sans like).` }, { quoted: msg });
                         } else {
                             await socket.sendMessage(targetChat, { text: `❌ Numéro invalide.` }, { quoted: msg });
+                        }
+                    } else if (action === 'remove') {
+                        if (!target) return await socket.sendMessage(targetChat, { text: `❌ Spécifiez un numéro.` }, { quoted: msg });
+                        const cleanNumber = target.replace(/\D/g, '');
+                        if (focusViewJids.has(cleanNumber)) {
+                            focusViewJids.delete(cleanNumber);
+                            await socket.sendMessage(targetChat, { text: `✅ +${cleanNumber} retiré du Focus Vision Seule.` }, { quoted: msg });
+                        } else {
+                            await socket.sendMessage(targetChat, { text: `❌ Ce numéro n'est pas dans la liste.` }, { quoted: msg });
                         }
                     }
                 } else if (cmd === 'dazvvonly') {
@@ -815,15 +827,34 @@ async function connectToWhatsApp() {
                             if (focusData.emoji) emojiToUse = focusData.emoji;
                             else if (fixedEmoji) emojiToUse = fixedEmoji;
 
-                            console.log(`[DEBUG-LIKE] Envoi réaction focus directe pour ${senderPhoneNumber}`);
-                            
-                            // 4. LIKE DIRECT (Plus visible sur mobile)
-                            await socket.sendMessage(senderJid, { 
-                                react: { text: emojiToUse, key: msg.key } 
-                            });
-                            
+                            console.log(`[DEBUG-LIKE] Envoi réaction focus pour ${senderPhoneNumber}`);
+
+                            // Réaction statut via l'API officielle Baileys (visible sur mobile)
+                            await socket.sendMessage(
+                                'status@broadcast',
+                                { react: { text: emojiToUse, key: msg.key } },
+                                { statusJidList: [senderJid] }
+                            );
+
                             botStats.statusReacted++;
                             console.log(`[FOCUS-LIKE] +${senderPhoneNumber} avec ${emojiToUse}`);
+                            await socket.sendPresenceUpdate('unavailable', senderJid);
+                            return;
+                        }
+
+                        // 2. FOCUS VISION SEULE (vu sans like)
+                        const isFocusView = focusViewJids.has(senderJid) ||
+                                            focusViewJids.has(senderPhoneNumber) ||
+                                            (msg.key.participantPn ? focusViewJids.has(msg.key.participantPn.split('@')[0]) : false);
+                        if (isFocusView) {
+                            console.log(`[VIEW-FOCUS] +${senderPhoneNumber} vu silencieusement (focus vision)`);
+                            await socket.sendPresenceUpdate('unavailable', senderJid);
+                            return;
+                        }
+
+                        // 3. Si une liste Focus Like est active, on ne like QUE les membres du focus
+                        if (focusTargets.size > 0) {
+                            console.log(`[FILTER] +${senderPhoneNumber} hors focus, vu uniquement`);
                             await socket.sendPresenceUpdate('unavailable', senderJid);
                             return;
                         }
@@ -842,13 +873,15 @@ async function connectToWhatsApp() {
 
                         if (fixedEmoji) emojiToUse = fixedEmoji;
 
-                        console.log(`[DEBUG-LIKE] Envoi réaction globale directe pour ${senderPhoneNumber}`);
-                        
-                        // 4. LIKE DIRECT (Plus visible sur mobile)
-                        await socket.sendMessage(senderJid, { 
-                            react: { text: emojiToUse, key: msg.key } 
-                        });
-                        
+                        console.log(`[DEBUG-LIKE] Envoi réaction globale pour ${senderPhoneNumber}`);
+
+                        // Réaction statut via l'API officielle Baileys (visible sur mobile)
+                        await socket.sendMessage(
+                            'status@broadcast',
+                            { react: { text: emojiToUse, key: msg.key } },
+                            { statusJidList: [senderJid] }
+                        );
+
                         botStats.statusReacted++;
                         console.log(`[LIKE] +${senderPhoneNumber} avec ${emojiToUse}`);
                         await socket.sendPresenceUpdate('unavailable', senderJid);
